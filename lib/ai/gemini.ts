@@ -11,14 +11,7 @@ function resolveEmbeddingModel(modelName?: string): string {
 }
 
 function resolveGenerationModel(modelName?: string): string {
-  if (!modelName) return "gemini-3.5-flash-lite";
-  if (
-    modelName === "gemini-1.5-flash" ||
-    modelName === "gemini-1.5-pro" ||
-    modelName === "gemini-1.0-pro"
-  ) {
-    return "gemini-3.5-flash-lite";
-  }
+  if (!modelName) return "gemini-1.5-flash";
   return modelName;
 }
 
@@ -115,7 +108,7 @@ export async function generateAnswer(options: {
   const { prompt, language } = options;
   let lastError: unknown;
   const primaryModel = resolveGenerationModel(process.env.GEMINI_MODEL);
-  const candidateModels = [primaryModel, "gemini-3.5-flash-lite", "gemini-3.7-flash", "gemini-flash-latest"];
+  const candidateModels = [primaryModel, "gemini-1.5-flash", "gemini-1.5-pro"];
   const uniqueModels = [...new Set(candidateModels.filter(Boolean))];
 
   for (const model of uniqueModels) {
