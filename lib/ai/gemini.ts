@@ -95,33 +95,15 @@ export async function embedMany(texts: string[]): Promise<number[][]> {
         const client = getGeminiClient();
         const singleText = texts.length === 1 ? texts[0] : null;
 
-        // Call embedContent with 768 output dimensionality (matching precomputed 768-dim index)
-        let result;
-        try {
-          result = await withTimeout(
-            client.models.embedContent({
-              model,
-              contents: singleText ?? texts,
-              config: { outputDimensionality: 768 },
-            }),
-            8000,
-            `Embedding request (${model})`
-          );
-        } catch (configError) {
-          // If outputDimensionality failed (e.g. unsupported on legacy model), try without config
-          console.warn(
-            `[Gemini API] embedContent with outputDimensionality failed on ${model}, retrying without config:`,
-            configError instanceof Error ? configError.message : configError
-          );
-          result = await withTimeout(
-            client.models.embedContent({
-              model,
-              contents: singleText ?? texts,
-            }),
-            8000,
-            `Embedding request without config (${model})`
-          );
-        }
+        // Call embedContent cleanly without the unsupported config object
+        const result = await withTimeout(
+          client.models.embedContent({
+            model,
+            contents: singleText ?? texts,
+          }),
+          8000,
+          `Embedding request (${model})`
+        );
 
         let rawValues: number[][] = [];
         if (result.embeddings && result.embeddings.length > 0) {
