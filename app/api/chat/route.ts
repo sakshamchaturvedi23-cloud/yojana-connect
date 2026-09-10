@@ -75,9 +75,24 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    console.warn("=== [AI Chat API Diagnostics (Returning Safe Fallback)] ===");
-    console.warn("Error:", error instanceof Error ? error.message : error);
-    console.warn("=========================================================");
+    console.error("=== [AI Chat API Diagnostics (Returning Safe Fallback)] ===");
+    console.error("Error:", error instanceof Error ? error.message : error);
+    if (error instanceof Error && error.stack) {
+      console.error("Stack:", error.stack);
+    }
+    if (error && typeof error === "object" && "cause" in error) {
+      console.error("Cause:", (error as { cause?: unknown }).cause);
+    }
+    console.error(
+      "Diagnostic Info:",
+      JSON.stringify({
+        hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+        keyLength: (process.env.GEMINI_API_KEY || "").length,
+        geminiModel: process.env.GEMINI_MODEL || "default (gemini-3.5-flash-lite)",
+        embeddingModel: process.env.EMBEDDING_MODEL || "default (gemini-embedding-001)",
+      })
+    );
+    console.error("=========================================================");
 
     const requestedLang = (body as { language?: string })?.language || "en";
     const fallbackAnswers: Record<string, string> = {
