@@ -1,3 +1,4 @@
+import rawData from "../../data/index/schemes.index.json";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -59,14 +60,13 @@ export async function loadIndex(): Promise<VectorChunk[]> {
     return cachedIndex;
   }
 
-  const indexPath = resolveIndexPath();
-  const rawData = await fs.readFile(indexPath, "utf8");
-  const items: Array<{
+  // Cast rawData as any to bypass TS compilation errors on serverless bundle
+  const items = (rawData as unknown) as Array<{
     id: string;
     text: string;
     embedding: number[];
     metadata: VectorChunk["metadata"];
-  }> = JSON.parse(rawData);
+  }>;
 
   schemeChunksMap = new Map();
   schemeIdsSet = new Set();
