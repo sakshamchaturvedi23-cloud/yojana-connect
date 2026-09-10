@@ -144,6 +144,23 @@ export async function hasScheme(schemeId?: string | null): Promise<boolean> {
   return (schemeIdsSet?.has(resolvedId) || schemeIdsSet?.has(schemeId)) ?? false;
 }
 
+export async function getChunksByScheme(
+  schemeId?: string | null,
+  limit = 2
+): Promise<SearchResult[]> {
+  const allChunks = await loadIndex();
+  const resolvedId = schemeId ? resolveCanonicalSchemeId(schemeId) : null;
+  let candidates: VectorChunk[] = [];
+  if (resolvedId && schemeChunksMap?.has(resolvedId)) {
+    candidates = schemeChunksMap.get(resolvedId)!;
+  } else if (schemeId && schemeChunksMap?.has(schemeId)) {
+    candidates = schemeChunksMap.get(schemeId)!;
+  } else {
+    candidates = allChunks;
+  }
+  return candidates.slice(0, limit).map((item) => ({ ...item, score: 0.99 }));
+}
+
 export function getIndexStats(): { isLoaded: boolean; totalChunks: number; totalSchemes: number } {
   return {
     isLoaded: Boolean(cachedIndex && cachedIndex.length > 0),

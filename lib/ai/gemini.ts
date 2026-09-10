@@ -5,9 +5,7 @@ let clientInstance: GoogleGenAI | null = null;
 let clientApiKey: string | null = null;
 
 export function resolveEmbeddingModel(modelName?: string): string {
-  if (!modelName || modelName === "text-embedding-004") {
-    return "gemini-embedding-001";
-  }
+  if (!modelName) return "gemini-embedding-001";
   return modelName.trim();
 }
 
@@ -19,7 +17,8 @@ export function resolveGenerationModel(modelName?: string): string {
     normalized === "gemini-1.5-pro" ||
     normalized === "gemini-1.0-pro" ||
     normalized === "gemini-2.0-flash" ||
-    normalized === "gemini-2.0-flash-exp"
+    normalized === "gemini-2.0-flash-exp" ||
+    normalized === "gemini-2.5-flash"
   ) {
     return "gemini-3.5-flash-lite";
   }
@@ -52,14 +51,16 @@ export function getGeminiClient(): GoogleGenAI {
 
   const options: Record<string, any> = { apiKey };
 
-  if (process.env.GEMINI_VERTEX_AI === "true" || process.env.VERTEX_AI === "true") {
+  // ONLY configure Vertex AI options if Vertex AI is explicitly enabled
+  const isVertexAI = process.env.GEMINI_VERTEX_AI === "true" || process.env.VERTEX_AI === "true";
+  if (isVertexAI) {
     options.vertexai = true;
-  }
-  if (process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_PROJECT_ID) {
-    options.project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_PROJECT_ID;
-  }
-  if (process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_LOCATION) {
-    options.location = process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_LOCATION;
+    if (process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_PROJECT_ID) {
+      options.project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_PROJECT_ID;
+    }
+    if (process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_LOCATION) {
+      options.location = process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_LOCATION;
+    }
   }
   if (process.env.GEMINI_API_VERSION) {
     options.apiVersion = process.env.GEMINI_API_VERSION;
@@ -72,37 +73,71 @@ export function getGeminiClient(): GoogleGenAI {
 
 export async function embedMany(texts: string[]): Promise<number[][]> {
   let lastError: unknown;
-  const primaryModel = resolveEmbeddingModel(process.env.EMBEDDING_MODEL);
-  const candidateModels = [primaryModel, "gemini-embedding-001", "text-embedding-004"];
+  const envModel = process.env.EMBEDDING_MODEL?.trim();
+  const primaryModel = resolveEmbeddingModel(envModel);
+
+  // Build candidate embedding models covering standard names and models/ prefix variants
+  const candidateModels = [
+    primaryModel,
+    primaryModel.startsWith("models/") ? primaryModel.replace(/^models\//, "") : `models/${primaryModel}`,
+    "gemini-embedding-001",
+    "models/gemini-embedding-001",
+    "gemini-embedding-2",
+    "models/gemini-embedding-2",
+    "text-embedding-004",
+    "models/text-embedding-004",
+  ];
   const uniqueModels = [...new Set(candidateModels.filter(Boolean))];
 
   for (const model of uniqueModels) {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         const client = getGeminiClient();
-        const result = await withTimeout(
-          client.models.embedContent({
-            model,
-            contents: texts,
-            config: { outputDimensionality: 768 },
-          }),
-          10000,
-          `Embedding request (${model})`
-        );
+        const singleText = texts.length === 1 ? texts[0] : null;
 
+        // Call embedContent with 768 output dimensionality (matching precomputed 768-dim index)
+        let result;
+        try {
+          result = await withTimeout(
+            client.models.embedContent({
+              model,
+              contents: singleText ?? texts,
+              config: { outputDimensionality: 768 },
+            }),
+            8000,
+            `Embedding request (${model})`
+          );
+        } catch (configError) {
+          // If outputDimensionality failed (e.g. unsupported on legacy model), try without config
+          console.warn(
+            `[Gemini API] embedContent with outputDimensionality failed on ${model}, retrying without config:`,
+            configError instanceof Error ? configError.message : configError
+          );
+          result = await withTimeout(
+            client.models.embedContent({
+              model,
+              contents: singleText ?? texts,
+            }),
+            8000,
+            `Embedding request without config (${model})`
+          );
+        }
+
+        let rawValues: number[][] = [];
         if (result.embeddings && result.embeddings.length > 0) {
-          const mapped = result.embeddings.map((e) => (e.values ? Array.from(e.values) : []));
-          if (mapped.length > 0 && mapped[0].length > 0) {
-            return mapped;
+          rawValues = result.embeddings.map((e) => (e.values ? Array.from(e.values) : []));
+        } else {
+          const anyResult = result as any;
+          if (anyResult.embedding?.values) {
+            rawValues = [Array.from(anyResult.embedding.values)];
+          } else if (Array.isArray(anyResult.values) && anyResult.values.length > 0) {
+            rawValues = [Array.from(anyResult.values)];
           }
         }
 
-        const anyResult = result as any;
-        if (anyResult.embedding?.values) {
-          return [Array.from(anyResult.embedding.values)];
-        }
-        if (Array.isArray(anyResult.values) && anyResult.values.length > 0) {
-          return [Array.from(anyResult.values)];
+        if (rawValues.length > 0 && rawValues[0].length > 0) {
+          // Normalize dimension to 768 using MRL slicing if the model returned larger dimensions (e.g. 3072)
+          return rawValues.map((v) => (v.length > 768 ? v.slice(0, 768) : v));
         }
 
         throw new Error(`Empty embedding output returned by model ${model}`);
@@ -113,7 +148,7 @@ export async function embedMany(texts: string[]): Promise<number[][]> {
           error instanceof Error ? error.message : error
         );
         if (attempt < 2) {
-          await new Promise((resolve) => setTimeout(resolve, 400));
+          await new Promise((resolve) => setTimeout(resolve, 300));
         }
       }
     }
@@ -156,10 +191,13 @@ export async function generateAnswer(options: {
   const primaryModel = resolveGenerationModel(process.env.GEMINI_MODEL);
   const candidateModels = [
     primaryModel,
+    primaryModel.startsWith("models/") ? primaryModel.replace(/^models\//, "") : `models/${primaryModel}`,
     "gemini-3.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-3.7-flash",
+    "models/gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "models/gemini-3.6-flash",
     "gemini-flash-latest",
+    "models/gemini-flash-latest",
   ];
   const uniqueModels = [...new Set(candidateModels.filter(Boolean))];
   const timeoutMs = parseInt(process.env.GEMINI_TIMEOUT_MS || "15000", 10);

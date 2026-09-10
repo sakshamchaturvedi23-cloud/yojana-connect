@@ -1,6 +1,6 @@
 import { embed, generateAnswer } from "./gemini";
 import { resolveLanguage, SupportedLanguage } from "./language";
-import { search, hasScheme } from "./vectorStore";
+import { search, hasScheme, getChunksByScheme } from "./vectorStore";
 import {
   resolveCanonicalSchemeId,
   extractSchemeIdFromText,
@@ -122,10 +122,20 @@ export async function answerChat(options: AnswerChatOptions): Promise<ChatAnswer
     }
   }
 
-  const queryEmbedding = await embed(queryForEmbedding);
-
-  // 2. Retrieve top 2 most relevant chunks
-  const results = await search(queryEmbedding, { schemeId: activeSchemeId, limit: 2 });
+  // 2. Retrieve top 2 most relevant chunks with graceful scheme retrieval fallback
+  let results: Awaited<ReturnType<typeof search>> = [];
+  try {
+    const queryEmbedding = await embed(queryForEmbedding);
+    results = await search(queryEmbedding, { schemeId: activeSchemeId, limit: 2 });
+  } catch (embedError) {
+    console.warn(
+      "[chatService] Embedding search encountered issue, using scheme chunk retrieval:",
+      embedError instanceof Error ? embedError.message : embedError
+    );
+    if (activeSchemeId) {
+      results = await getChunksByScheme(activeSchemeId, 2);
+    }
+  }
 
   // Cross-lingual semantic threshold
   const scoreThreshold = answerLanguage === "en" || answerLanguage === "hinglish" ? 0.5 : 0.45;
