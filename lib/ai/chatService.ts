@@ -115,7 +115,10 @@ export async function answerChat(options: AnswerChatOptions): Promise<ChatAnswer
   // 1. Generate query embedding with follow-up awareness
   let queryForEmbedding = message;
   if (Array.isArray(conversation) && conversation.length > 0) {
-    const lastUserTurn = [...conversation].reverse().find((item) => item.role === "user")?.content;
+    // Find the last turn from user that is NOT identical to the current message
+    const lastUserTurn = [...conversation]
+      .reverse()
+      .find((item) => item.role === "user" && item.content.trim() !== message.trim())?.content;
     const wordCount = message.trim().split(/\s+/).length;
     if (lastUserTurn && (wordCount <= 7 || !activeSchemeId)) {
       queryForEmbedding = `${lastUserTurn} ${message}`;
@@ -126,7 +129,11 @@ export async function answerChat(options: AnswerChatOptions): Promise<ChatAnswer
   let results: Awaited<ReturnType<typeof search>> = [];
   try {
     const queryEmbedding = await embed(queryForEmbedding);
-    results = await search(queryEmbedding, { schemeId: activeSchemeId, limit: 2 });
+    results = await search(queryEmbedding, {
+      schemeId: activeSchemeId,
+      queryText: message,
+      limit: 2,
+    });
   } catch (embedError) {
     console.warn(
       "[chatService] Embedding search encountered issue, using scheme chunk retrieval:",
@@ -137,8 +144,20 @@ export async function answerChat(options: AnswerChatOptions): Promise<ChatAnswer
     }
   }
 
-  // Cross-lingual semantic threshold
-  const scoreThreshold = answerLanguage === "en" || answerLanguage === "hinglish" ? 0.5 : 0.45;
+  // If semantic search produced no results above threshold or was empty, but activeSchemeId was identified:
+  // Gracefully pull the scheme chunks!
+  if ((!results.length || results[0].score < 0.35) && activeSchemeId) {
+    results = await getChunksByScheme(activeSchemeId, 2);
+  }
+
+  // Cross-lingual semantic threshold:
+  // When an activeSchemeId is already identified and chunks are scheme-specific, the threshold is 0.25
+  // For open queries across all schemes: 0.38 for en/hinglish and 0.32 for regional languages (hi, mr, ta)
+  const scoreThreshold = activeSchemeId
+    ? 0.25
+    : answerLanguage === "en" || answerLanguage === "hinglish"
+    ? 0.38
+    : 0.32;
 
   if (!results.length || results[0].score < scoreThreshold) {
     return {
@@ -195,9 +214,21 @@ export async function answerChat(options: AnswerChatOptions): Promise<ChatAnswer
 
   const insufficientPrefix = "INSUFFICIENT_CONTEXT:";
   if (answer.startsWith(insufficientPrefix)) {
+    const trimmedAnswer = answer.slice(insufficientPrefix.length).trim();
+    // If the model gave a clarifying response or guidance based on chunks (e.g. asking which scheme),
+    // retain the retrieved sources and schemes so the user has the relevant context and links
+    if (trimmedAnswer && results.length > 0) {
+      return {
+        answer: trimmedAnswer,
+        language: answerLanguage,
+        sources: toSources(results),
+        schemes: [...new Set(results.map((result) => result.metadata.schemeId))],
+        fallback: false,
+      };
+    }
+
     return {
-      answer:
-        answer.slice(insufficientPrefix.length).trim() || getNoContextMessage(answerLanguage),
+      answer: getNoContextMessage(answerLanguage),
       language: answerLanguage,
       sources: [],
       schemes: [],

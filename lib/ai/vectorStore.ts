@@ -56,17 +56,48 @@ function resolveIndexPath(): string {
 }
 
 export async function loadIndex(): Promise<VectorChunk[]> {
-  if (cachedIndex) {
+  if (cachedIndex && cachedIndex.length > 0) {
     return cachedIndex;
   }
 
-  // Cast rawData as any to bypass TS compilation errors on serverless bundle
-  const items = (rawData as unknown) as Array<{
+  let items: Array<{
     id: string;
     text: string;
     embedding: number[];
     metadata: VectorChunk["metadata"];
-  }>;
+  }> = [];
+
+  // 1. Try static import (handles both direct array and default export)
+  if (Array.isArray(rawData)) {
+    items = (rawData as unknown) as typeof items;
+  } else if (rawData && typeof rawData === "object" && Array.isArray((rawData as { default?: unknown }).default)) {
+    items = ((rawData as { default: unknown }).default as unknown) as typeof items;
+  }
+
+  // 2. Fallback to filesystem if static import was empty
+  if (!items || items.length === 0) {
+    const candidatePaths = [
+      path.join(process.cwd(), "data/index/schemes.index.json"),
+      path.join(process.cwd(), "yojana-connect/data/index/schemes.index.json"),
+      path.resolve(__dirname, "../../data/index/schemes.index.json"),
+      path.resolve(__dirname, "../../../data/index/schemes.index.json"),
+    ];
+
+    for (const p of candidatePaths) {
+      try {
+        if (existsSync(p)) {
+          const content = await fs.readFile(p, "utf-8");
+          const parsed = JSON.parse(content);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            items = parsed;
+            break;
+          }
+        }
+      } catch {
+        // continue
+      }
+    }
+  }
 
   schemeChunksMap = new Map();
   schemeIdsSet = new Set();
@@ -100,21 +131,23 @@ function fastCosineSimilarity(
 ): number {
   let dot = 0;
   const chunkEmbedding = chunk.embedding;
-  const len = queryEmbedding.length;
+  const len = Math.min(queryEmbedding.length, chunkEmbedding.length);
 
   for (let i = 0; i < len; i += 1) {
     dot += queryEmbedding[i] * chunkEmbedding[i];
   }
 
   const denominator = queryMagnitude * chunk.magnitude;
-  return denominator === 0 ? 0 : dot / denominator;
+  if (denominator === 0 || !Number.isFinite(denominator)) return 0;
+  const sim = dot / denominator;
+  return Number.isFinite(sim) ? sim : 0;
 }
 
 export async function search(
   queryEmbedding: number[],
-  options: { schemeId?: string | null; limit?: number } = {}
+  options: { schemeId?: string | null; queryText?: string; limit?: number } = {}
 ): Promise<SearchResult[]> {
-  const { schemeId = null, limit = 2 } = options;
+  const { schemeId = null, queryText = "", limit = 2 } = options;
   const allChunks = await loadIndex();
 
   const resolvedId = schemeId ? resolveCanonicalSchemeId(schemeId) : null;
@@ -126,13 +159,39 @@ export async function search(
     candidates = schemeChunksMap.get(schemeId)!;
   }
 
-  const queryMag = computeMagnitude(queryEmbedding);
+  // Ensure query vector dimension matches candidate embedding dimension (768)
+  const targetDim = candidates[0]?.embedding?.length || 768;
+  const normalizedQuery =
+    queryEmbedding.length > targetDim ? queryEmbedding.slice(0, targetDim) : queryEmbedding;
+  const queryMag = computeMagnitude(normalizedQuery);
+
+  const queryTokens = queryText
+    ? queryText.toLowerCase().split(/\s+/).filter((t) => t.length > 2)
+    : [];
 
   return candidates
-    .map((item) => ({
-      ...item,
-      score: fastCosineSimilarity(queryEmbedding, queryMag, item),
-    }))
+    .map((item) => {
+      let score = fastCosineSimilarity(normalizedQuery, queryMag, item);
+
+      // Add lexical relevance boost for matching scheme title or section
+      if (queryTokens.length > 0) {
+        const titleAndSection = `${item.metadata.schemeName} ${item.metadata.section} ${item.metadata.schemeId}`.toLowerCase();
+        let matches = 0;
+        for (const token of queryTokens) {
+          if (titleAndSection.includes(token)) {
+            matches += 1;
+          }
+        }
+        if (matches > 0) {
+          score = Math.min(1.0, score + Math.min(0.15, matches * 0.05));
+        }
+      }
+
+      return {
+        ...item,
+        score,
+      };
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }

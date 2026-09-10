@@ -82,8 +82,6 @@ export async function embedMany(texts: string[]): Promise<number[][]> {
     primaryModel.startsWith("models/") ? primaryModel.replace(/^models\//, "") : `models/${primaryModel}`,
     "gemini-embedding-001",
     "models/gemini-embedding-001",
-    "gemini-embedding-2",
-    "models/gemini-embedding-2",
     "text-embedding-004",
     "models/text-embedding-004",
   ];
@@ -195,10 +193,11 @@ export async function generateAnswer(options: {
             systemInstruction: [
               "You are Yojana Connect, a concise and factual assistant for Indian government schemes.",
               "Use only the supplied scheme context, user profile, and previous conversation history.",
+              "When the user mentions a scheme name, category, or broad term (such as 'kisan scheme', 'farmer schemes', 'housing', 'pension', 'health', 'scholarship'), provide a clear and helpful overview of the relevant scheme(s) and their core benefits directly from the supplied context.",
               "When the user asks follow-up questions (such as 'Am I eligible?', 'What documents?', 'How do I apply?'), use the previous conversation history to understand which scheme is being discussed and apply the user profile.",
               "Never invent benefits, eligibility, documents, or URLs.",
               "Be concise, clear, and direct. Avoid conversational filler.",
-              "If context is insufficient, start your reply with exactly INSUFFICIENT_CONTEXT: and state so plainly.",
+              "Only if the supplied context has absolutely no information about the query should you start your reply with exactly INSUFFICIENT_CONTEXT: and state so plainly.",
               "Do not state that a user is definitely eligible; final eligibility is determined by official authorities.",
               getLanguageInstruction(language),
             ].join(" "),
